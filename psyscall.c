@@ -315,7 +315,7 @@ long psyscall(pid_t pid, long number, ...)
     }
     waitpid(pid, &status, 0);
     if (!WIFSTOPPED(status)) {
-        fprintf(stderr, "failed to stop the target %d\n", pid);
+        fprintf(stderr, "failed to stop the target pid=%d\n", pid);
         ptrace(PTRACE_DETACH, pid, NULL, 0);
         kill(child, SIGKILL);
         return -1;

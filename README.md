@@ -10,7 +10,7 @@ Tested on x86, ARMv7, MIPS, PPC64.
 % sleep 60 &
 [1] 123
 % ./psyscall 123 exit 42
-[123] syscall(exit, 42) = 42 (0x0000002A)
+[123] syscall(exit, 42) = 42
 [1]  + exit 42    sleep 60
 % wait 123; echo $?
 42
@@ -32,9 +32,9 @@ Tested on x86, ARMv7, MIPS, PPC64.
 % ./psyscall 666 mmap 0 0x1000 'PROT_READ|PROT_WRITE' 'MAP_PRIVATE|MAP_ANONYMOUS' -1 0
 [666] syscall(mmap, 0, 0x1000, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 140544083800064 (0x7fd2f830b000)
 % ./psyscall 666 getcwd 0x7fd2f830b000 0x1000
-[666] syscall(getcwd, 0x7fd2f830b000, 0x1000) = 24 (0x00000018)
+[666] syscall(getcwd, 0x7fd2f830b000, 0x1000) = 24
 % ./psyscall 666 write 2 0x7fd2f830b000 24   
-[666] syscall(write, 2, 0x7fd2f830b000, 24) = 24 (0x00000018)
+[666] syscall(write, 2, 0x7fd2f830b000, 24) = 24
 % cat /tmp/stderr.log                       
 /home/resilar/psyscall-target
 ```
