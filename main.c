@@ -114,12 +114,15 @@ int main(int argc, char *argv[])
     unsigned long addr;
     long arg[6] = {0};
 
+    errno = 0;
     if (argc < 3 || argc > 9) {
         fprintf(stderr, "syscall() inject0r\n");
         fprintf(stderr, "usage: %s pid syscall [arg0] ... [arg5]\n", argv[0]);
         return argc > 1;
     } else if (!(pid = atoi(argv[1])) || pid == getpid() || kill(pid, 0)) {
-        fprintf(stderr, "bad pid: %s\n", argv[1]);
+        if (errno)
+            fprintf(stderr, "bad pid: %s (%s)\n", argv[1], strerror(errno));
+        else fprintf(stderr, "bad pid: %s\n", argv[1]);
         return 2;
     } else if ((number = find_syscall(argv[2])) < 0) {
         fprintf(stderr, "bad syscall: %s\n", argv[2]);
@@ -197,8 +200,6 @@ int main(int argc, char *argv[])
     for (i = 3; i < argc; i++) {
         fprintf(stdout, ", %s", arg[i-3] ? argv[i] : "0");
     }
-    if (ret >= 0x1000){
-        fprintf(stdout, ") = %ld (0x%08lX)\n", ret, ret);
-    } else fprintf(stdout, ") = %ld\n", ret);
+    fprintf(stdout, ((ret+!ret) & 0xFFF) ? ") = %ld\n" : ") = 0x%08lx\n", ret);
     return 0;
 }
