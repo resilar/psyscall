@@ -8,6 +8,9 @@ all: psyscall
 psyscall: main.o psyscall.o
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
+%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 main.o: main.c sysheaders.h
 	echo "#include <sys/syscall.h>" | $(CC) -dM -E - \
 		| sed -n 's/#define __NR_\([^ ]*\) .*/{"\1", __NR_\1},/p' \

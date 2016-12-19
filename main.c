@@ -28,7 +28,7 @@ static int entry_cmp(const void *a, const void *b) {
     return strcmp(A->name, B->name);
 }
 
-long find_syscall(char *name)
+static long find_syscall(char *name)
 {
     char *end;
     long nr = strtol(name, &end, 0);
@@ -43,7 +43,7 @@ long find_syscall(char *name)
 }
 
 /**
- * C-style constant (e.g., '42', 'PROT_READ|PROT_WRITE', ...)
+ * Parses C-style constant (e.g., '42', 'PROT_READ|PROT_WRITE', ...)
  */
 int parse_constant(char *arg, long *out)
 {
@@ -73,11 +73,12 @@ int parse_constant(char *arg, long *out)
 }
 
 /**
- * There are less cumbersome methods to write remote process memory.
+ * There are more efficient and easier methods to write remote process memory.
  * However, PTRACE_POKEDATA is the most portable, so we use it.
  */
 static long ptrace_write(pid_t pid, void *addr, void *buf, long len)
 {
+    errno = 0;
     while (len > 0) {
         int i, j;
         if ((i = ((unsigned long)addr % sizeof(long))) || len < sizeof(long)) {
@@ -103,7 +104,7 @@ static long ptrace_write(pid_t pid, void *addr, void *buf, long len)
             }
         }
     }
-    return 1;
+    return !errno;
 }
 
 int main(int argc, char *argv[])
@@ -141,7 +142,7 @@ int main(int argc, char *argv[])
         }
         if (!parse_constant(argv[i], &arg[i-3])) {
             fprintf(stderr, "bad arg%d: %s\n", i-3, argv[i]);
-            return i+1;
+            return 10+i;
         }
     }
 
@@ -154,25 +155,25 @@ int main(int argc, char *argv[])
         long pagesz = sysconf(_SC_PAGE_SIZE);
         for (i = 0; i < 2; i++) {
             if ((ret = find_syscall(i ? "mmap" : "mmap2")) != -1) {
-                ret = psyscall(pid, ret, NULL, (1 + len/pagesz) * pagesz,
+                ret = psyscall(pid, ret, NULL, (pagesz+len-1)/pagesz,
                         PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
                 if (ret != -1) break;
             }
         }
         if (i == 2) {
             fprintf(stderr, "allocating memory from target failed\n");
-            return 11;
+            return 4;
         }
         addr = (unsigned long)ret;
 
         if (ptrace(PTRACE_ATTACH, pid, NULL, 0) == -1) {
             fprintf(stderr, "ptrace() attach failed: %s\n", strerror(errno));
-            return 12;
+            return 5;
         }
         if (waitpid(pid, &status, 0) == -1 || !WIFSTOPPED(status)) {
             fprintf(stderr, "stopping target process failed\n");
             ptrace(PTRACE_DETACH, pid, NULL, 0);
-            return 12;
+            return 6;
         }
 
         len = 0;
@@ -187,19 +188,26 @@ int main(int argc, char *argv[])
             }
         }
         ptrace(PTRACE_DETACH, pid, NULL, 0);
-        len = (1 + len/pagesz) * pagesz;
+        len = (pagesz+len-1)/pagesz;
     }
 
     /**
      * Finally, inject the syscall.
      */
+    errno = 0;
     ret = psyscall(pid, number, arg[0], arg[1], arg[2], arg[3], arg[4], arg[5]);
     if (addr) psyscall(pid, SYS_munmap, addr, len);
+    if (ret == -1 && errno) {
+        fprintf(stderr, "[%d] psyscall() errno=%d (%s)\n",
+                pid, errno, strerror(errno));
+        return 7;
+    }
 
     fprintf(stdout, "[%d] syscall(%s", pid, argv[2]);
     for (i = 3; i < argc; i++) {
         fprintf(stdout, ", %s", arg[i-3] ? argv[i] : "0");
     }
-    fprintf(stdout, ((ret+!ret) & 0xFFF) ? ") = %ld\n" : ") = 0x%08lx\n", ret);
+    fprintf(stdout, ") = ");
+    fprintf(stdout, ((ret+!ret) & 0xFFF) ? "%ld\n" : "0x%08lx\n", ret);
     return 0;
 }
