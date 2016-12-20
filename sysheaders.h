@@ -1,5 +1,4 @@
 #include <sys/auxv.h>
-#include <sys/cdefs.h>
 #include <sys/epoll.h>
 #include <sys/errno.h>
 #include <sys/eventfd.h>
@@ -18,18 +17,17 @@
 #include <sys/prctl.h>
 #include <sys/procfs.h>
 #include <sys/ptrace.h>
-#include <sys/queue.h>
 #include <sys/reboot.h>
 #include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/sem.h>
 #include <sys/sendfile.h>
 #include <sys/shm.h>
-#include <sys/signalfd.h>
 #include <sys/signal.h>
+#include <sys/signalfd.h>
 #include <sys/socket.h>
-#include <sys/statfs.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/statvfs.h>
 #include <sys/swap.h>
 #include <sys/syscall.h>
@@ -39,7 +37,6 @@
 #include <sys/timerfd.h>
 #include <sys/times.h>
 #include <sys/timex.h>
-#include <sys/ttychars.h>
 #include <sys/ttydefaults.h>
 #include <sys/types.h>
 #include <sys/ucontext.h>
@@ -48,6 +45,5 @@
 #include <sys/user.h>
 #include <sys/utsname.h>
 #include <sys/vfs.h>
-#include <sys/vt.h>
 #include <sys/wait.h>
 #include <sys/xattr.h>
