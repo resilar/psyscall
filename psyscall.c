@@ -165,7 +165,7 @@ die:
  * 00400000-00580000 r-xp 00000000 fe:01 4858009 /usr/lib/nethack/nethack
  */
 struct proc_map {
-    unsigned long start, end;
+    void *start, *end;
     char perms[4];
     char path[PATH_MAX];
 };
@@ -183,7 +183,7 @@ static FILE *proc_maps_open(pid_t pid)
 static FILE *proc_maps_iter(FILE *it, struct proc_map *map)
 {
     if (it) {
-        if (fscanf(it, "%lx-%lx %c%c%c%c %*[^ ] %*[^ ] %*[^ ]%*[ ]%[^\n]",
+        if (fscanf(it, "%p-%p %c%c%c%c %*[^ ] %*[^ ] %*[^ ]%*[ ]%[^\n]",
                 &map->start, &map->end, &map->perms[0], &map->perms[1],
                 &map->perms[2], &map->perms[3], map->path) >= 6) {
             return it;
@@ -194,14 +194,14 @@ static FILE *proc_maps_iter(FILE *it, struct proc_map *map)
     return 0;
 }
 
-static int proc_maps_find(pid_t pid, unsigned long address, char *pathname,
+static int proc_maps_find(pid_t pid, void *addr, char *path,
         struct proc_map *out)
 {
     FILE *it = proc_maps_open(pid);
     while ((it = proc_maps_iter(it, out))) {
-        if (pathname && strcmp(out->path, pathname) != 0)
+        if (path && strcmp(out->path, path) != 0)
             continue;
-        if (address && !(out->start <= address && address < out->end))
+        if (addr && !(out->start <= addr && addr < out->end))
             continue;
         fclose(it);
         return 1;
@@ -215,8 +215,9 @@ long psyscall(pid_t pid, long number, ...)
     FILE *it;
     pid_t child;
     int i, status;
+    void *stack_va;
     struct proc_map libc, map;
-    unsigned long syscall_sym_rva, stack_va;
+    unsigned long syscall_sym_rva;
     long argv[6], regs[PT_REGS], saved[PT_REGS], ret;
     static int initialized = 0;
 
@@ -244,7 +245,7 @@ long psyscall(pid_t pid, long number, ...)
             void *handle, *addr;
             if ((handle = dlopen(libc.path, RTLD_NOW|RTLD_NOLOAD|RTLD_LOCAL))
                     && (addr = dlsym(handle, "syscall"))) {
-                syscall_sym_rva = (unsigned long)addr - map.start;
+                syscall_sym_rva = (long)addr - (long)map.start;
                 dlclose(handle);
                 fclose(it);
                 break;
@@ -310,7 +311,7 @@ long psyscall(pid_t pid, long number, ...)
      * TODO: This fails spectacularly if we have less than 0x10 longs of free
      *       space (per SP register) available in the bottom of the stack.
      */
-    regs[arch.pc] = libc.start + syscall_sym_rva;
+    regs[arch.pc] =  (unsigned long)libc.start + syscall_sym_rva;
     if (!proc_maps_find(pid, 0, "[stack]", &map)) {
         fprintf(stderr, "/proc/%d/maps does not contain [stack] region\n", pid);
         ptrace(PTRACE_DETACH, pid, NULL, 0);
@@ -318,12 +319,12 @@ long psyscall(pid_t pid, long number, ...)
         errno = ECHILD;
         return -1;
     }
-    stack_va = map.start + 0x80;
+    stack_va = (char *)map.start + 0x80;
     for (i = 0; i < PT_REGS; i++) {
         int j;
         if (arch.regs[i] != ARCH_SP)
             continue;
-        if (!proc_maps_find(child, regs[i], NULL, &map))
+        if (!proc_maps_find(child, (void *)regs[i], NULL, &map))
             continue;
         if (map.perms[0] != 'r' || map.perms[1] != 'w')
             continue;
@@ -332,8 +333,8 @@ long psyscall(pid_t pid, long number, ...)
             long x = ptrace(PTRACE_PEEKDATA, child, (long *)regs[i]+j, 0);
             ptrace(PTRACE_POKEDATA, pid, (long *)stack_va+j, x);
         }
-        regs[i] = stack_va;
-        stack_va = (unsigned long)((long *)stack_va+j);
+        regs[i] = (long)stack_va;
+        stack_va = (long *)stack_va+j;
     }
     kill(child, SIGKILL);
 
