@@ -183,6 +183,7 @@ static FILE *proc_maps_open(pid_t pid)
 static FILE *proc_maps_iter(FILE *it, struct proc_map *map)
 {
     if (it) {
+        map->path[0] = '\0';
         if (fscanf(it, "%p-%p %c%c%c%c %*[^ ] %*[^ ] %*[^ ]%*[ ]%[^\n]",
                 &map->start, &map->end, &map->perms[0], &map->perms[1],
                 &map->perms[2], &map->perms[3], map->path) >= 6) {
