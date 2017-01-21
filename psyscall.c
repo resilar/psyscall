@@ -174,7 +174,7 @@ static FILE *proc_maps_open(pid_t pid)
 {
     if (pid) {
         char filename[32];
-        sprintf(filename, "/proc/%d/maps", (int)pid);
+        sprintf(filename, "/proc/%ld/maps", (long)pid);
         return fopen(filename, "r");
     }
     return fopen("/proc/self/maps", "r");
