@@ -78,40 +78,46 @@ int parse_constant(char *arg, long *out)
  */
 static long ptrace_write(pid_t pid, void *addr, void *buf, long len)
 {
+    long left = len;
     errno = 0;
-    while (len > 0) {
+    while (left > 0) {
         int i, j;
-        if ((i = ((unsigned long)addr % sizeof(long))) || len < sizeof(long)) {
+        if ((i = ((unsigned long)addr % sizeof(long))) || left < sizeof(long)) {
             union {
                 long value;
                 unsigned char buf[sizeof(long)];
             } data;
-            data.value = ptrace(PTRACE_PEEKDATA, pid, (char *)addr - i, 0);
-            for (j = i; j < sizeof(long) && j-i < len; j++) {
-                data.buf[j] = ((char *)buf)[j-i];
+            data.value = ptrace(PTRACE_PEEKDATA, pid, (char *)addr-i, 0);
+            if (!errno) {
+                for (j = i; j < sizeof(long) && j-i < left; j++) {
+                    data.buf[j] = ((char *)buf)[j-i];
+                }
+                if (!ptrace(PTRACE_POKEDATA, pid, (char *)addr-i, data.value)) {
+                    addr = (char *)addr + (j-i);
+                    buf = (char *)buf + (j-i);
+                    left -= j-i;
+                }
             }
-            ptrace(PTRACE_POKEDATA, pid, (char *)addr - i, data.value);
-            addr = (char *)addr + (j-i);
-            buf = (char *)buf + (j-i);
-            len -= j-i;
         } else {
-            j = len/sizeof(long);
-            for (i = 0; i < j; i++) {
-                ptrace(PTRACE_POKEDATA, pid, addr, *(long *)buf);
-                addr = (char *)addr + sizeof(long);
-                buf = (char *)buf + sizeof(long);
-                len -= sizeof(long);
+            for (i = 0, j = left/sizeof(long); i < j; i++) {
+                if (!ptrace(PTRACE_POKEDATA, pid, addr, *(long *)buf)) {
+                    addr = (char *)addr + sizeof(long);
+                    buf = (char *)buf + sizeof(long);
+                    left -= sizeof(long);
+                } else break;
             }
         }
+        if (errno)
+            break;
     }
-    return !errno;
+    return len - left;
 }
 
 int main(int argc, char *argv[])
 {
     pid_t pid;
     int i, len;
-    long number,  ret;
+    long number, ret;
     unsigned long addr;
     long arg[6] = {0};
 
@@ -137,7 +143,7 @@ int main(int argc, char *argv[])
     for (i = 3; i < argc; i++) {
         const char *p;
         if (argv[i][0] == '"' && (p = strchr(argv[i]+1, '"')) && !p[1]) {
-            len += (p - argv[i]);
+            len += p-argv[i];
             continue;
         }
         if (!parse_constant(argv[i], &arg[i-3])) {
@@ -176,19 +182,21 @@ int main(int argc, char *argv[])
             return 6;
         }
 
-        len = 0;
+        ret = 0;
         for (i = 3; i < argc; i++) {
             char *p;
-            if (argv[i][0] == '"' && (p = strchr(argv[i]+1, '"')) && !p[1]) {
-                *p = '\0';
-                arg[i-3] = addr+len;
-                ptrace_write(pid, (void *)(addr+len), argv[i]+1, p - argv[i]);
-                len += (p - argv[i]);
-                *p = '"';
-            }
+            if (argv[i][0] != '"' || !(p = strchr(argv[i]+1, '"')) || p[1])
+                continue;
+            *p = '\0';
+            arg[i-3] = addr+ret;
+            ret += ptrace_write(pid, (char *)addr+ret, argv[i]+1, p-argv[i]);
+            *p = '"';
         }
         ptrace(PTRACE_DETACH, pid, NULL, 0);
-        len = (pagesz+len-1)/pagesz;
+        if (ret != len) {
+            fprintf(stderr, "ptrace_write() failed\n");
+            return 7;
+        }
     }
 
     /**
@@ -200,7 +208,7 @@ int main(int argc, char *argv[])
     if (ret == -1 && errno) {
         fprintf(stderr, "[%d] psyscall() errno=%d (%s)\n",
                 pid, errno, strerror(errno));
-        return 7;
+        return 8;
     }
 
     fprintf(stdout, "[%d] syscall(%s", pid, argv[2]);
