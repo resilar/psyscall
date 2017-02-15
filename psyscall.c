@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <sched.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,8 +16,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define PT_REGS (sizeof(((struct user *)0)->regs)/sizeof(unsigned long))
+static void *pdlsym(pid_t pid, void *base, const char *symbol);
 
+#define PT_REGS (sizeof(((struct user *)0)->regs)/sizeof(unsigned long))
 static struct {
     enum reg_type {
         ARCH_GP = 0,
@@ -76,7 +78,7 @@ static int init_arch()
         goto die;
     }
     for (i = 0; i < PT_REGS; i++) {
-        if (regs[i] <= stack && stack <= regs[i]+0x80) {
+        if (regs[i] <= stack && stack <= regs[i]+0x100) {
             arch.regs[i] = ARCH_SP;
         }
     }
@@ -107,7 +109,7 @@ static int init_arch()
      */
     for (i = 0; i < PT_REGS; i++) {
         if (arch.regs[i] == ARCH_SP) {
-            if (regs[i] <= stack && stack <= regs[i]+0x80) {
+            if (regs[i] <= stack && stack <= regs[i]+0x100) {
                 if (arch.sp < 0 || regs0[i] < regs0[arch.sp])
                     arch.sp = i;
                 arch.regs[i] = ARCH_SP;
@@ -118,6 +120,7 @@ static int init_arch()
         if (regs0[i] == child && regs[i] == parent) {
             arch.regs[i] = ARCH_RET;
             if (arch.ret >= 0) {
+                /* TODO: occurs on PPC64 */
                 fprintf(stderr, "warning: ambiguous RET register\n");
                 continue;
             }
@@ -218,16 +221,25 @@ long psyscall(pid_t pid, long number, ...)
     int i, status;
     void *stack_va;
     struct proc_map libc, map;
-    unsigned long syscall_sym_rva;
+    unsigned long syscall_va;
     long argv[6], regs[PT_REGS], saved[PT_REGS], ret;
     static int initialized = 0;
-
-    if (kill(pid, 0)) {
-        fprintf(stderr, "invalid process (pid=%d): %s\n", pid, strerror(errno));
-        return -1;
-    }
     if (!initialized && !(initialized = init_arch())) {
         errno = EFAULT;
+        return -1;
+    }
+
+    /**
+     * Stop the target process.
+     */
+    if (ptrace(PTRACE_ATTACH, pid, NULL, 0) == -1) {
+        fprintf(stderr, "ptrace(PTRACE_ATTACH): %s\n", strerror(errno));
+        return -1;
+    }
+    waitpid(pid, &status, 0);
+    if (!WIFSTOPPED(status)) {
+        fprintf(stderr, "failed to stop the target pid=%d\n", pid);
+        errno = ECHILD;
         return -1;
     }
 
@@ -235,30 +247,27 @@ long psyscall(pid_t pid, long number, ...)
      * Find a matching version of libc in the target and current process.
      * Note that we do not actually need matching versions, but the check helps
      * to prevent injection to incompatible processes (e.g., between 32-bit and
-     * 64-bit processes).
+     * 64-bit processes). TODO: Make this less restrictive?
      */
     it = proc_maps_open(pid);
     while ((it = proc_maps_iter(it, &libc))) {
         char *file = strrchr(libc.path, '/');
         if ((file = strstr(file ? file + 1 : libc.path, "libc"))
                 && !strcmp(&file[strspn(file+4, "0123456789-.")+4], "so")
-                && proc_maps_find(0, 0, libc.path, &map)) {
-            void *handle, *addr;
-            if ((handle = dlopen(libc.path, RTLD_NOW|RTLD_NOLOAD|RTLD_LOCAL))
-                    && (addr = dlsym(handle, "syscall"))) {
-                syscall_sym_rva = (long)addr - (long)map.start;
-                dlclose(handle);
+                /*&& proc_maps_find(0, 0, libc.path, &map)*/) {
+            syscall_va = (unsigned long)pdlsym(pid, libc.start, "syscall");
+            if (syscall_va) {
                 fclose(it);
                 break;
             }
-            if (handle) dlclose(handle);
         }
     }
-    if (it == NULL) {
-        fprintf(stderr, "/proc/{self,%d}/maps have incompatible libc\n", pid);
+    if (it == NULL || !proc_maps_find(pid, 0, "[stack]", &map)) {
+        ptrace(PTRACE_DETACH, pid, NULL, 0);
         errno = EINVAL;
         return -1;
     }
+    stack_va = (char *)map.start + 0x80;
 
     /**
      * Capture (local) syscall context from a forked child process.
@@ -274,6 +283,7 @@ long psyscall(pid_t pid, long number, ...)
         exit(0);
     } else if (child == -1) {
         fprintf(stderr, "fork(): %s\n", strerror(errno));
+        ptrace(PTRACE_DETACH, pid, NULL, 0);
         return -1;
     }
     waitpid(child, &status, 0);
@@ -283,6 +293,7 @@ long psyscall(pid_t pid, long number, ...)
     }
     if (!WIFSTOPPED(status)) {
         fprintf(stderr, "failed to stop a fork\n");
+        ptrace(PTRACE_DETACH, pid, NULL, 0);
         kill(child, SIGKILL);
         errno = ECHILD;
         return -1;
@@ -290,37 +301,12 @@ long psyscall(pid_t pid, long number, ...)
     ptrace(PTRACE_GETREGS, child, NULL, &regs);
 
     /**
-     * Stop the target process.
-     */
-    if (ptrace(PTRACE_ATTACH, pid, NULL, 0) == -1) {
-        fprintf(stderr, "ptrace(PTRACE_ATTACH): %s\n", strerror(errno));
-        kill(child, SIGKILL);
-        return -1;
-    }
-    waitpid(pid, &status, 0);
-    if (!WIFSTOPPED(status)) {
-        fprintf(stderr, "failed to stop the target pid=%d\n", pid);
-        ptrace(PTRACE_DETACH, pid, NULL, 0);
-        kill(child, SIGKILL);
-        errno = ECHILD;
-        return -1;
-    }
-    ptrace(PTRACE_GETREGS, pid, NULL, &saved);
-
-    /**
      * Prepare registers and stack.
      * TODO: This fails spectacularly if we have less than 0x10 longs of free
      *       space (per SP register) available in the bottom of the stack.
      */
-    regs[arch.pc] =  (unsigned long)libc.start + syscall_sym_rva;
-    if (!proc_maps_find(pid, 0, "[stack]", &map)) {
-        fprintf(stderr, "/proc/%d/maps does not contain [stack] region\n", pid);
-        ptrace(PTRACE_DETACH, pid, NULL, 0);
-        kill(child, SIGKILL);
-        errno = ECHILD;
-        return -1;
-    }
-    stack_va = (char *)map.start + 0x80;
+    ptrace(PTRACE_GETREGS, pid, NULL, &saved);
+    regs[arch.pc] = syscall_va;
     for (i = 0; i < PT_REGS; i++) {
         int j;
         if (arch.regs[i] != ARCH_SP)
@@ -361,10 +347,226 @@ long psyscall(pid_t pid, long number, ...)
         ret = -1;
     }
 
-    /**
-     * Clean up.
-     */
     ptrace(PTRACE_SETREGS, pid, NULL, &saved);
     ptrace(PTRACE_DETACH, pid, NULL, 0);
     return ret;
+}
+
+/**
+ * The rest of this file contains pdlsym() implementation for ELF systems.
+ */
+
+struct elf {
+    pid_t pid;
+    uintptr_t base;
+    uint8_t class, data;
+    uint16_t type;
+    int W;
+
+    long (*getN)(pid_t pid, const void *addr, void *buf, long len);
+
+    struct {
+        uintptr_t offset;
+        uint16_t size, num;
+    } phdr;
+
+    uintptr_t symtab, syment;
+    uintptr_t strtab, strsz;
+};
+
+static long readN(pid_t pid, const void *addr, void *buf, long len)
+{
+    errno = 0;
+    if (!pid) {
+        memmove(buf, addr, len);
+        return 1;
+    }
+    while (len > 0) {
+        int i, j;
+        if ((i = ((unsigned long)addr % sizeof(long))) || len < sizeof(long)) {
+            union {
+                long value;
+                unsigned char buf[sizeof(long)];
+            } data;
+            data.value = ptrace(PTRACE_PEEKDATA, pid, (char *)addr - i, 0);
+            if (errno) return 0;
+            for (j = i; j < sizeof(long) && j-i < len; j++) {
+                ((char *)buf)[j-i] = data.buf[j];
+            }
+            addr = (char *)addr + (j-i);
+            buf = (char *)buf + (j-i);
+            len -= j-i;
+        } else {
+            for (i = 0, j = len/sizeof(long); i < j; i++) {
+                *(long *)buf = ptrace(PTRACE_PEEKDATA, pid, addr, 0);
+                if (errno) return 0;
+                addr = (char *)addr + sizeof(long);
+                buf = (char *)buf + sizeof(long);
+                len -= sizeof(long);
+            }
+        }
+    }
+    return 1;
+}
+
+static long Ndaer(pid_t pid, const void *addr, void *buf, long len)
+{
+    if (readN(pid, addr, buf, len)) {
+        int i, j;
+        for (i = 0, j = len-1; i < j; i++, j--) {
+            char tmp = ((char *)buf)[i];
+            ((char *)buf)[i] = ((char *)buf)[j];
+            ((char *)buf)[j] = tmp;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static uint8_t get8(pid_t pid, const void *addr)
+{
+    uint8_t ret;
+    return readN(pid, addr, &ret, sizeof(uint8_t)) ? ret : 0;
+}
+static uint16_t get16(struct elf *elf, const void *addr)
+{
+    uint16_t ret;
+    return elf->getN(elf->pid, addr, &ret, sizeof(uint16_t)) ? ret : 0;
+}
+static uint32_t get32(struct elf *elf, const void *addr)
+{
+    uint32_t ret;
+    return elf->getN(elf->pid, addr, &ret, sizeof(uint32_t)) ? ret : 0;
+}
+static uint64_t get64(struct elf *elf, const void *addr)
+{
+    uint64_t ret;
+    return elf->getN(elf->pid, addr, &ret, sizeof(uint64_t)) ? ret : 0;
+}
+
+static uintptr_t getW(struct elf *elf, const void *addr)
+{
+    return (elf->class == 0x01) ? (uintptr_t)get32(elf, addr)
+                                : (uintptr_t)get64(elf, addr);
+}
+
+static int loadelf(pid_t pid, const char *base, struct elf *elf)
+{
+    uint32_t magic;
+    int i, j, loads;
+
+    /**
+     * ELF header.
+     */
+    elf->pid = pid;
+    elf->base = (uintptr_t)base;
+    if (readN(pid, base, &magic, 4) && !memcmp(&magic, "\x7F" "ELF", 4)
+            && ((elf->class = get8(pid, base+4)) == 1 || elf->class == 2)
+            && ((elf->data = get8(pid, base+5)) == 1 || elf->data == 2)
+            && get8(pid, base+6) == 1) {
+        union { uint16_t value; char buf[2]; } data;
+        data.value = (uint16_t)0x1122;
+        elf->getN = (data.buf[0] & elf->data) ? Ndaer : readN;
+        elf->type = get16(elf, base + 0x10);
+        elf->W = (2 << elf->class);
+    } else {
+        /* Bad ELF */
+        return 0;
+    }
+
+    /**
+     * Program headers.
+     */
+    loads = 0;
+    elf->strtab = elf->strsz = elf->symtab = elf->syment = 0;
+    elf->phdr.offset = getW(elf, base + 0x18 + elf->W);
+    elf->phdr.size = get16(elf, base + 0x18 + elf->W*3 + 0x6);
+    elf->phdr.num = get16(elf, base + 0x18 + elf->W*3 + 0x8);
+    for (i = 0; i < elf->phdr.num; i++) {
+        uint32_t phtype;
+        uintptr_t offset, vaddr, filesz, memsz;
+        const char *ph = base + elf->phdr.offset + i*elf->phdr.size;
+
+        phtype = get32(elf, ph);
+        if (phtype != 1 /* PT_LOAD */ && phtype != 2 /* PT_DYNAMIC */)
+            continue;
+
+        offset = getW(elf, ph + elf->W);
+        vaddr  = getW(elf, ph + elf->W*2);
+        filesz = getW(elf, ph + elf->W*4);
+        memsz  = getW(elf, ph + elf->W*5);
+        if (vaddr < offset || memsz < filesz)
+            return 0;
+
+        if (phtype == 1) { /* PT_LOAD */
+            if (elf->type == 2) { /* ET_EXEC */
+                if (vaddr - offset < elf->base) {
+                    /* this is not the lowest base of the ELF */
+                    errno = EFAULT;
+                    return 0;
+                }
+            }
+            loads++;
+        } else if (phtype == 2) { /* PT_DYNAMIC */
+            const char *tag;
+            uintptr_t type, value;
+            tag = (char *)((elf->type == 2) ? 0 : base) + vaddr;
+            for (j = 0; 2*j*elf->W < memsz; j++) {
+                if ((type = getW(elf, tag + 2*elf->W*j))) {
+                    value = getW(elf, tag + 2*elf->W*j + elf->W);
+                    switch (type) {
+                    case 5: elf->strtab = value; break; /* DT_STRTAB */
+                    case 6: elf->symtab = value; break; /* DT_SYMTAB */
+                    case 10: elf->strsz = value; break; /* DT_STRSZ */
+                    case 11: elf->syment = value; break; /* DT_SYMENT */
+                    default: break;
+                    }
+                } else {
+                    /* DT_NULL */
+                    break;
+                }
+            }
+        }
+    }
+
+    return loads && elf->strtab && elf->strsz && elf->symtab && elf->syment;
+}
+
+static int sym_iter(struct elf *elf, int i, uint32_t *stridx, uintptr_t *value)
+{
+    if ((i+1)*elf->syment-1 < elf->strtab - elf->symtab) {
+        const char *sym = (char *)elf->symtab + elf->syment*i;
+        if (elf->symtab < elf->base)
+            sym += elf->base;
+        if ((*stridx = get32(elf, sym)) < elf->strsz) {
+            if ((*value = getW(elf, sym + elf->W)) && elf->type != 2)
+                *value += elf->base;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void *pdlsym(pid_t pid, void *base, const char *symbol)
+{
+    struct elf elf;
+    if (loadelf((pid == getpid()) ? 0 : pid, base, &elf)) {
+        int i, j;
+        uint32_t stridx;
+        uintptr_t value;
+        const char *pstrtab = (char *)elf.strtab;
+        if (elf.strtab < elf.base)
+            pstrtab += elf.base;
+        for (i = 0; sym_iter(&elf, i, &stridx, &value); i++) {
+            if (value) {
+                for (j = 0; stridx+j < elf.strsz; j++) {
+                    if (symbol[j] != (char)get8(pid, pstrtab + stridx+j))
+                        break;
+                    if (!symbol[j])
+                        return (void *)value;
+                }
+            }
+        }
+    }
+    return NULL;
 }

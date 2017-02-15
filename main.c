@@ -78,39 +78,36 @@ int parse_constant(char *arg, long *out)
  */
 static long ptrace_write(pid_t pid, void *addr, void *buf, long len)
 {
-    long left = len;
+    long n = len;
     errno = 0;
-    while (left > 0) {
+    while (len > 0) {
         int i, j;
-        if ((i = ((unsigned long)addr % sizeof(long))) || left < sizeof(long)) {
+        if ((i = ((unsigned long)addr % sizeof(long))) || len < sizeof(long)) {
             union {
                 long value;
                 unsigned char buf[sizeof(long)];
             } data;
             data.value = ptrace(PTRACE_PEEKDATA, pid, (char *)addr-i, 0);
-            if (!errno) {
-                for (j = i; j < sizeof(long) && j-i < left; j++) {
-                    data.buf[j] = ((char *)buf)[j-i];
-                }
-                if (!ptrace(PTRACE_POKEDATA, pid, (char *)addr-i, data.value)) {
-                    addr = (char *)addr + (j-i);
-                    buf = (char *)buf + (j-i);
-                    left -= j-i;
-                }
+            if (errno) break;
+            for (j = i; j < sizeof(long) && j-i < len; j++) {
+                data.buf[j] = ((char *)buf)[j-i];
+            }
+            if (!ptrace(PTRACE_POKEDATA, pid, (char *)addr-i, data.value)) {
+                addr = (char *)addr + (j-i);
+                buf = (char *)buf + (j-i);
+                len -= j-i;
             }
         } else {
-            for (i = 0, j = left/sizeof(long); i < j; i++) {
-                if (!ptrace(PTRACE_POKEDATA, pid, addr, *(long *)buf)) {
-                    addr = (char *)addr + sizeof(long);
-                    buf = (char *)buf + sizeof(long);
-                    left -= sizeof(long);
-                } else break;
+            for (i = 0, j = len/sizeof(long); i < j; i++) {
+                if (ptrace(PTRACE_POKEDATA, pid, addr, *(long *)buf) != 0)
+                    return n - len;
+                addr = (char *)addr + sizeof(long);
+                buf = (char *)buf + sizeof(long);
+                len -= sizeof(long);
             }
         }
-        if (errno)
-            break;
     }
-    return len - left;
+    return n - len;
 }
 
 int main(int argc, char *argv[])

@@ -1,7 +1,7 @@
 CC ?= cc
 
 CFLAGS += -g -Wall -std=c99 -pedantic
-LDFLAGS += -ldl
+LDFLAGS +=
 
 all: psyscall
 
