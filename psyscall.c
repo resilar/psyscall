@@ -547,7 +547,7 @@ static int sym_iter(struct elf *elf, int i, uint32_t *stridx, uintptr_t *value)
     return 0;
 }
 
-void *pdlsym(pid_t pid, void *base, const char *symbol)
+static void *pdlsym(pid_t pid, void *base, const char *symbol)
 {
     struct elf elf;
     if (loadelf((pid == getpid()) ? 0 : pid, base, &elf)) {
