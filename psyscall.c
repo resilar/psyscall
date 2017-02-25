@@ -244,17 +244,13 @@ long psyscall(pid_t pid, long number, ...)
     }
 
     /**
-     * Find a matching version of libc in the target and current process.
-     * Note that we do not actually need matching versions, but the check helps
-     * to prevent injection to incompatible processes (e.g., between 32-bit and
-     * 64-bit processes). TODO: Make this less restrictive?
+     * Find the virtual address of syscall() in the target process.
      */
     it = proc_maps_open(pid);
     while ((it = proc_maps_iter(it, &libc))) {
         char *file = strrchr(libc.path, '/');
         if ((file = strstr(file ? file + 1 : libc.path, "libc"))
-                && !strcmp(&file[strspn(file+4, "0123456789-.")+4], "so")
-                /*&& proc_maps_find(0, 0, libc.path, &map)*/) {
+                && !strcmp(&file[strspn(file+4, "0123456789-.")+4], "so")) {
             syscall_va = (unsigned long)pdlsym(pid, libc.start, "syscall");
             if (syscall_va) {
                 fclose(it);

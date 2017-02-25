@@ -155,28 +155,30 @@ int main(int argc, char *argv[])
     addr = 0;
     if (len) {
         int status;
-        long pagesz = sysconf(_SC_PAGE_SIZE);
-        for (i = 0; i < 2; i++) {
-            if ((ret = find_syscall(i ? "mmap" : "mmap2")) != -1) {
-                ret = psyscall(pid, ret, NULL, (pagesz+len-1)/pagesz,
-                        PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-                if (ret != -1) break;
+        long pagesz, sc;
+        if ((sc = find_syscall("mmap")) == -1) {
+            if ((sc = find_syscall("mmap2")) == -1) {
+                fprintf(stderr, "__NR_mmap missing\n");
+                return 4;
             }
         }
-        if (i == 2) {
+        pagesz = sysconf(_SC_PAGE_SIZE);
+        ret = psyscall(pid, sc, NULL, (pagesz+len-1)/pagesz,
+                PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+        if (ret == -1) {
             fprintf(stderr, "allocating memory from target failed\n");
-            return 4;
+            return 5;
         }
         addr = (unsigned long)ret;
 
         if (ptrace(PTRACE_ATTACH, pid, NULL, 0) == -1) {
             fprintf(stderr, "ptrace() attach failed: %s\n", strerror(errno));
-            return 5;
+            return 6;
         }
         if (waitpid(pid, &status, 0) == -1 || !WIFSTOPPED(status)) {
             fprintf(stderr, "stopping target process failed\n");
             ptrace(PTRACE_DETACH, pid, NULL, 0);
-            return 6;
+            return 7;
         }
 
         ret = 0;
@@ -192,7 +194,7 @@ int main(int argc, char *argv[])
         ptrace(PTRACE_DETACH, pid, NULL, 0);
         if (ret != len) {
             fprintf(stderr, "ptrace_write() failed\n");
-            return 7;
+            return 8;
         }
     }
 
@@ -205,14 +207,16 @@ int main(int argc, char *argv[])
     if (ret == -1 && errno) {
         fprintf(stderr, "[%d] psyscall() errno=%d (%s)\n",
                 pid, errno, strerror(errno));
-        return 8;
+        return 9;
     }
 
-    fprintf(stdout, "[%d] syscall(%s", pid, argv[2]);
-    for (i = 3; i < argc; i++) {
-        fprintf(stdout, ", %s", arg[i-3] ? argv[i] : "0");
+    if (isatty(STDOUT_FILENO)) {
+        fprintf(stdout, "[%d] syscall(%s", pid, argv[2]);
+        for (i = 3; i < argc; i++) {
+            fprintf(stdout, ", %s", arg[i-3] ? argv[i] : "0");
+        }
+        fprintf(stdout, ") = ");
     }
-    fprintf(stdout, ") = ");
     fprintf(stdout, ((ret+!ret) & 0xFFF) ? "%ld\n" : "0x%08lx\n", ret);
     return 0;
 }
