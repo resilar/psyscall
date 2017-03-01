@@ -112,11 +112,10 @@ static long ptrace_write(pid_t pid, void *addr, void *buf, long len)
 
 int main(int argc, char *argv[])
 {
+    int i;
     pid_t pid;
-    int i, len;
-    long number, ret;
-    unsigned long addr;
-    long arg[6] = {0};
+    unsigned long addr, len;
+    long ret, number, arg[6] = {0};
 
     errno = 0;
     if (argc < 3 || argc > 9) {
@@ -156,6 +155,7 @@ int main(int argc, char *argv[])
     if (len) {
         int status;
         long pagesz, sc;
+        unsigned long j;
         if ((sc = find_syscall("mmap")) == -1) {
             if ((sc = find_syscall("mmap2")) == -1) {
                 fprintf(stderr, "__NR_mmap missing\n");
@@ -163,7 +163,7 @@ int main(int argc, char *argv[])
             }
         }
         pagesz = sysconf(_SC_PAGE_SIZE);
-        ret = psyscall(pid, sc, NULL, (pagesz+len-1)/pagesz,
+        ret = psyscall(pid, sc, NULL, (len = pagesz * (1 + (len-1)/pagesz)),
                 PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
         if (ret == -1) {
             fprintf(stderr, "allocating memory from target failed\n");
@@ -173,29 +173,32 @@ int main(int argc, char *argv[])
 
         if (ptrace(PTRACE_ATTACH, pid, NULL, 0) == -1) {
             fprintf(stderr, "ptrace() attach failed: %s\n", strerror(errno));
+            psyscall(pid, SYS_munmap, addr, len);
             return 6;
         }
         if (waitpid(pid, &status, 0) == -1 || !WIFSTOPPED(status)) {
             fprintf(stderr, "stopping target process failed\n");
             ptrace(PTRACE_DETACH, pid, NULL, 0);
+            psyscall(pid, SYS_munmap, addr, len);
             return 7;
         }
 
-        ret = 0;
-        for (i = 3; i < argc; i++) {
-            char *p;
-            if (argv[i][0] != '"' || !(p = strchr(argv[i]+1, '"')) || p[1])
-                continue;
-            *p = '\0';
-            arg[i-3] = addr+ret;
-            ret += ptrace_write(pid, (char *)addr+ret, argv[i]+1, p-argv[i]);
-            *p = '"';
+        for (i = 3, j = 0; i < argc; i++) {
+            const char *p;
+            if (argv[i][0] == '"' && (p = strchr(argv[i]+1, '"')) && !p[1]) {
+                ret = ptrace_write(pid, (char *)addr+j, argv[i]+1, p-argv[i]);
+                if (ret == p-argv[i]) {
+                    arg[i-3] = addr+j;
+                    j += ret;
+                } else {
+                    fprintf(stderr, "ptrace_write() failed\n");
+                    ptrace(PTRACE_DETACH, pid, NULL, 0);
+                    psyscall(pid, SYS_munmap, addr, len);
+                    return 8;
+                }
+            }
         }
         ptrace(PTRACE_DETACH, pid, NULL, 0);
-        if (ret != len) {
-            fprintf(stderr, "ptrace_write() failed\n");
-            return 8;
-        }
     }
 
     /**
@@ -203,7 +206,7 @@ int main(int argc, char *argv[])
      */
     errno = 0;
     ret = psyscall(pid, number, arg[0], arg[1], arg[2], arg[3], arg[4], arg[5]);
-    if (addr) psyscall(pid, SYS_munmap, addr, len);
+    if (len) psyscall(pid, SYS_munmap, addr, len);
     if (ret == -1 && errno) {
         fprintf(stderr, "[%d] psyscall() errno=%d (%s)\n",
                 pid, errno, strerror(errno));
