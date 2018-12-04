@@ -185,9 +185,11 @@ int main(int argc, char *argv[])
         }
 
         for (i = 3, j = 0; i < argc; i++) {
-            const char *p;
+            char *p;
             if (argv[i][0] == '"' && (p = strchr(argv[i]+1, '"')) && !p[1]) {
+                *p = '\0';
                 ret = ptrace_write(pid, (char *)addr+j, argv[i]+1, p-argv[i]);
+                *p = '"';
                 if (ret == p-argv[i]) {
                     arg[i-3] = addr+j;
                     j += ret;
