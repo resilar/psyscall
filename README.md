@@ -2,7 +2,7 @@
 
 Linux syscall() injection to external processes.
 
-Tested on x86 (Arch Linux & Ubuntu), ARMv7 (Android 6), MIPS (Debian), PPC64 (Debian).
+Tested on x86 (Arch Linux & Ubuntu), ARMv7 (Android 6 & 7), MIPS (Debian), PPC64 (Debian).
 
 Requires `echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope` (or root privileges).
 

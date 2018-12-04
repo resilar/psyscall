@@ -29,34 +29,39 @@ static struct {
     int pc, sp, ret;
 } arch;
 
-static long stub1(long number) { return kill(number, SIGSTOP); }
+static void *stub1(volatile long *pid) {
+    syscall(SYS_kill, *pid, SIGSTOP);
+    syscall(SYS_getpid);
+    syscall(SYS_getppid, 0, 1, 2, 3, 4, 5);
+    return (void *)*pid;
+}
+
 static int stub0(void *x)
 {
-    int pid = getpid();
+    volatile long pid = (long)getpid();
     ptrace(PTRACE_TRACEME);
-    syscall(SYS_kill, pid, SIGSTOP);
-    syscall(SYS_getpid, 0, &pid, &x);
-    syscall(SYS_getppid, 0, 1, 2, 3, 4, 5);
-    x = (void *)((long (*)(long))((~(unsigned long)stub1 & ~0x3) | 2))(pid);
-    return !x;
+    while (syscall(SYS_kill, pid, SIGSTOP) != 1337) {
+        if (!x) x = ((void *(*)(volatile long *))((~(unsigned long)stub1 & ~0x3) | 2)) (&pid);
+    }
+    return pid && !x;
 }
 
 static int init_arch()
 {
     pid_t child, parent;
-    int status, crash, i;
+    int status, i;
     unsigned long stack, pagesz;
-    long regs0[PT_REGS], regs[PT_REGS];
+    long regs0[PT_REGS], regs1[PT_REGS], regs[PT_REGS];
 
     arch.sp = arch.pc = arch.ret = -1;
     memset(arch.regs, 0, sizeof(arch.regs));
 
-    /**
-     * Allocate a stack for a clone.
+    /*
+     * Allocate stack for child.
      */
-    pagesz = getpagesize();
+    pagesz = sysconf(_SC_PAGE_SIZE);
     stack = (unsigned long)mmap(NULL, pagesz, PROT_READ|PROT_WRITE,
-            MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) + pagesz;
+                                MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) + pagesz;
     child = clone(stub0, (void *)stack, SIGCHLD, NULL);
     if (child == -1) {
         fprintf(stderr, "clone(): %s\n", strerror(errno));
@@ -69,100 +74,124 @@ static int init_arch()
         fprintf(stderr, "failed to stop a clone\n");
         goto die;
     }
-
-    /**
-     * Mark SP register(s).
-     */
-    if (ptrace(PTRACE_GETREGS, child, NULL, &regs) == -1) {
+    if (ptrace(PTRACE_GETREGS, child, NULL, &regs0) == -1) {
         fprintf(stderr, "ptrace(PTRACE_GETREGS): %s\n", strerror(errno));
         goto die;
     }
+
+    /*
+     * PC register.
+     */
+    ptrace(PTRACE_CONT, child, NULL, NULL);
+    waitpid(child, &status, 0);
+    ptrace(PTRACE_GETREGS, child, NULL, &regs);
     for (i = 0; i < PT_REGS; i++) {
-        if (regs[i] <= stack && stack <= regs[i]+0x100) {
-            arch.regs[i] = ARCH_SP;
+        if ((regs[i] & ~0x3) == (~(unsigned long)stub1 & ~0x3)) {
+            unsigned long regsi = regs[i];
+            regs[i] = (unsigned long)stub1;
+            ptrace(PTRACE_SETREGS, child, NULL, regs);
+            ptrace(PTRACE_CONT, child, NULL, NULL);
+            waitpid(child, &status, 0);
+            regs[i] = regsi;
+            if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP) {
+                arch.regs[arch.pc = i] = ARCH_PC;
+                break;
+            }
         }
     }
 
-    /**
+    /*
      * Get registers after getpid() and getppid() syscalls.
      */
-    if (ptrace(PTRACE_SYSCALL, child, NULL, 0) == -1) {
+    if (ptrace(PTRACE_SYSCALL, child, NULL, NULL) == -1) {
         fprintf(stderr, "ptrace(PTRACE_SYSCALL): %s\n", strerror(errno));
         goto die;
     }
     waitpid(child, &status, 0);
     if (WIFSTOPPED(status) && (WSTOPSIG(status) & ~0x80) == SIGTRAP) {
-        ptrace(PTRACE_SYSCALL, child, NULL, 0);
+        ptrace(PTRACE_SYSCALL, child, NULL, NULL);
         waitpid(child, &status, 0);
     }
-    ptrace(PTRACE_GETREGS, child, NULL, &regs0);
-    ptrace(PTRACE_SYSCALL, child, NULL, 0);
+    ptrace(PTRACE_GETREGS, child, NULL, &regs1);
+    ptrace(PTRACE_SYSCALL, child, NULL, NULL);
     waitpid(child, &status, 0);
     if (WIFSTOPPED(status) && (WSTOPSIG(status) & ~0x80) == SIGTRAP) {
-        ptrace(PTRACE_SYSCALL, child, NULL, 0);
+        ptrace(PTRACE_SYSCALL, child, NULL, NULL);
         waitpid(child, &status, 0);
     }
     ptrace(PTRACE_GETREGS, child, NULL, &regs);
 
-    /**
-     * RET & SP registers.
+    /*
+     * Mark RET registers.
      */
     for (i = 0; i < PT_REGS; i++) {
-        if (arch.regs[i] == ARCH_SP) {
-            if (regs[i] <= stack && stack <= regs[i]+0x100) {
-                if (arch.sp < 0 || regs0[i] < regs0[arch.sp])
-                    arch.sp = i;
-                arch.regs[i] = ARCH_SP;
-                continue;
-            }
-            arch.regs[i] = 0;
-        }
-        if (regs0[i] == child && regs[i] == parent) {
+        if (regs1[i] == child && regs[i] == parent)
             arch.regs[i] = ARCH_RET;
-            if (arch.ret >= 0) {
-                /* TODO: occurs on PPC64 */
-                fprintf(stderr, "warning: ambiguous RET register\n");
-                continue;
+    }
+
+    /*
+     * SP register.
+     */
+    ptrace(PTRACE_CONT, child, NULL, NULL);
+    waitpid(child, &status, 0);
+    ptrace(PTRACE_GETREGS, child, NULL, &regs);
+    for (i = 0; i < PT_REGS; i++) {
+        if (regs0[i] <= stack && stack <= regs0[i] + 0x100) {
+            if (regs1[i] <= stack && stack <= regs1[i] + pagesz) {
+                if (regs0[i] == regs[i] && regs1[i] <= regs0[i]) {
+                    if (arch.sp < 0 || regs1[i] < regs1[arch.sp])
+                        arch.sp = i;
+                    arch.regs[i] = ARCH_SP;
+                }
             }
-            arch.ret = i;
         }
     }
 
-    /**
-     * PC register.
+    /*
+     * RET registers.
      */
-    i = 0;
-    ptrace(PTRACE_CONT, child, NULL, 0);
-    waitpid(child, &status, 0);
-    crash = WSTOPSIG(status);
-    ptrace(PTRACE_GETREGS, child, NULL, &regs);
-    while (WIFSTOPPED(status) && WSTOPSIG(status) == crash && i < PT_REGS) {
-        if ((regs[i] & ~0x3) == (~(unsigned long)stub1 & ~0x3)) {
-            memcpy(regs0, regs, sizeof(regs));
-            regs0[i] = (unsigned long)stub1;
-            ptrace(PTRACE_SETREGS, child, NULL, regs0);
-            ptrace(PTRACE_CONT, child, NULL, 0);
+    for (i = 0; i < PT_REGS; i++) {
+        if (arch.regs[i] == ARCH_RET) {
+            unsigned long regsi = regs[i];
+            regs[i] = 1337;
+            ptrace(PTRACE_SETREGS, child, NULL, regs);
+            ptrace(PTRACE_CONT, child, NULL, NULL);
             waitpid(child, &status, 0);
-            if (WIFSTOPPED(status) && WSTOPSIG(status) != crash) {
-                arch.regs[arch.pc = i] = ARCH_PC;
+            regs[i] = regsi;
+
+            if (WIFEXITED(status)) {
+                child = -1;
+                arch.ret = i;
                 break;
             }
-            ptrace(PTRACE_SETREGS, child, NULL, regs);
         }
-        i++;
     }
+
+#if 0
+    for (i = 0; i < PT_REGS; i++) {
+        printf("regs[%02d] = 0x%016lX", i, regs[i]);
+        if (arch.pc == i) printf(" *PC*");
+        else if (arch.regs[i] == ARCH_PC) printf(" PC");
+        if (arch.sp == i) printf(" *SP*");
+        else if (arch.regs[i] == ARCH_SP) printf(" SP");
+        if (arch.ret == i) printf(" *RET*");
+        else if (arch.regs[i] == ARCH_RET) printf(" RET");
+        printf("\n");
+    }
+#endif
 
     if (arch.pc < 0) fprintf(stderr, "PC register missing\n");
     if (arch.sp < 0) fprintf(stderr, "SP register missing\n");
     if (arch.ret < 0) fprintf(stderr, "RET register missing\n");
 
 die:
-    kill(child, SIGKILL);
+    if (child >= 0)
+        kill(child, SIGKILL);
     munmap((void *)(stack-pagesz), pagesz);
     return arch.sp >= 0 && arch.pc >= 0 && arch.ret >= 0;
 }
 
-/**
+/*
  * /proc/pid/maps format:
  * address           perms offset  dev   inode   pathname
  * 00400000-00580000 r-xp 00000000 fe:01 4858009 /usr/lib/nethack/nethack
@@ -229,10 +258,10 @@ long psyscall(pid_t pid, long number, ...)
         return -1;
     }
 
-    /**
+    /*
      * Stop the target process.
      */
-    if (ptrace(PTRACE_ATTACH, pid, NULL, 0) == -1) {
+    if (ptrace(PTRACE_ATTACH, pid, NULL, NULL) == -1) {
         fprintf(stderr, "ptrace(PTRACE_ATTACH): %s\n", strerror(errno));
         return -1;
     }
@@ -243,7 +272,7 @@ long psyscall(pid_t pid, long number, ...)
         return -1;
     }
 
-    /**
+    /*
      * Find the virtual address of syscall() in the target process.
      */
     it = proc_maps_open(pid);
@@ -259,13 +288,13 @@ long psyscall(pid_t pid, long number, ...)
         }
     }
     if (it == NULL || !proc_maps_find(pid, 0, "[stack]", &map)) {
-        ptrace(PTRACE_DETACH, pid, NULL, 0);
+        ptrace(PTRACE_DETACH, pid, NULL, NULL);
         errno = EINVAL;
         return -1;
     }
     stack_va = (char *)map.start + 0x80;
 
-    /**
+    /*
      * Capture (local) syscall context from a forked child process.
      */
     va_start(ap, number);
@@ -279,24 +308,24 @@ long psyscall(pid_t pid, long number, ...)
         exit(0);
     } else if (child == -1) {
         fprintf(stderr, "fork(): %s\n", strerror(errno));
-        ptrace(PTRACE_DETACH, pid, NULL, 0);
+        ptrace(PTRACE_DETACH, pid, NULL, NULL);
         return -1;
     }
     waitpid(child, &status, 0);
     if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP) {
-        ptrace(PTRACE_CONT, child, NULL, 0);
+        ptrace(PTRACE_CONT, child, NULL, NULL);
         waitpid(child, &status, 0);
     }
     if (!WIFSTOPPED(status)) {
-        fprintf(stderr, "failed to stop a fork\n");
-        ptrace(PTRACE_DETACH, pid, NULL, 0);
+        fprintf(stderr, "failed to stop fork\n");
+        ptrace(PTRACE_DETACH, pid, NULL, NULL);
         kill(child, SIGKILL);
         errno = ECHILD;
         return -1;
     }
     ptrace(PTRACE_GETREGS, child, NULL, &regs);
 
-    /**
+    /*
      * Prepare registers and stack.
      * TODO: This fails spectacularly if we have less than 0x10 longs of free
      *       space (per SP register) available in the bottom of the stack.
@@ -313,7 +342,7 @@ long psyscall(pid_t pid, long number, ...)
             continue;
 
         for (j = 0; j < 0x10; j++) {
-            long x = ptrace(PTRACE_PEEKDATA, child, (long *)regs[i]+j, 0);
+            long x = ptrace(PTRACE_PEEKDATA, child, (long *)regs[i]+j, NULL);
             ptrace(PTRACE_POKEDATA, pid, (long *)stack_va+j, x);
         }
         regs[i] = (long)stack_va;
@@ -321,14 +350,14 @@ long psyscall(pid_t pid, long number, ...)
     }
     kill(child, SIGKILL);
 
-    /**
+    /*
      * Execute syscall.
      */
     ptrace(PTRACE_SETREGS, pid, NULL, &regs);
-    ptrace(PTRACE_SYSCALL, pid, NULL, 0);
+    ptrace(PTRACE_SYSCALL, pid, NULL, NULL);
     waitpid(pid, &status, 0);
     if (WIFSTOPPED(status) && (WSTOPSIG(status) & ~0x80) == SIGTRAP) {
-        ptrace(PTRACE_SYSCALL, pid, NULL, 0);
+        ptrace(PTRACE_SYSCALL, pid, NULL, NULL);
         waitpid(pid, &status, 0);
     }
     if (WIFSTOPPED(status)) {
@@ -344,11 +373,11 @@ long psyscall(pid_t pid, long number, ...)
     }
 
     ptrace(PTRACE_SETREGS, pid, NULL, &saved);
-    ptrace(PTRACE_DETACH, pid, NULL, 0);
+    ptrace(PTRACE_DETACH, pid, NULL, NULL);
     return ret;
 }
 
-/**
+/*
  * The rest of this file contains pdlsym() implementation for ELF systems.
  */
 
@@ -384,7 +413,7 @@ static long readN(pid_t pid, const void *addr, void *buf, long len)
                 long value;
                 unsigned char buf[sizeof(long)];
             } data;
-            data.value = ptrace(PTRACE_PEEKDATA, pid, (char *)addr - i, 0);
+            data.value = ptrace(PTRACE_PEEKDATA, pid, (char *)addr - i, NULL);
             if (errno) return 0;
             for (j = i; j < sizeof(long) && j-i < len; j++) {
                 ((char *)buf)[j-i] = data.buf[j];
@@ -394,7 +423,7 @@ static long readN(pid_t pid, const void *addr, void *buf, long len)
             len -= j-i;
         } else {
             for (i = 0, j = len/sizeof(long); i < j; i++) {
-                *(long *)buf = ptrace(PTRACE_PEEKDATA, pid, addr, 0);
+                *(long *)buf = ptrace(PTRACE_PEEKDATA, pid, addr, NULL);
                 if (errno) return 0;
                 addr = (char *)addr + sizeof(long);
                 buf = (char *)buf + sizeof(long);
@@ -451,7 +480,7 @@ static int loadelf(pid_t pid, const char *base, struct elf *elf)
     uint32_t magic;
     int i, j, loads;
 
-    /**
+    /*
      * ELF header.
      */
     elf->pid = pid;
@@ -470,7 +499,7 @@ static int loadelf(pid_t pid, const char *base, struct elf *elf)
         return 0;
     }
 
-    /**
+    /*
      * Program headers.
      */
     loads = 0;
@@ -497,7 +526,7 @@ static int loadelf(pid_t pid, const char *base, struct elf *elf)
         if (phtype == 1) { /* PT_LOAD */
             if (elf->type == 2) { /* ET_EXEC */
                 if (vaddr - offset < elf->base) {
-                    /* this is not the lowest base of the ELF */
+                    /* This is not the lowest base of the ELF */
                     errno = EFAULT;
                     return 0;
                 }

@@ -35,14 +35,14 @@ static long find_syscall(char *name)
     if (*end != '\0') {
         struct entry key = { name, 0 };
         struct entry *hit = bsearch(&key, syscalls,
-                sizeof(syscalls)/sizeof(struct entry),
-                sizeof(struct entry), entry_cmp);
+                                    sizeof(syscalls)/sizeof(struct entry),
+                                    sizeof(struct entry), entry_cmp);
         return hit ? hit->number : -1;
     }
     return nr;
 }
 
-/**
+/*
  * Parses C-style constant (e.g., '42', 'PROT_READ|PROT_WRITE', ...)
  */
 int parse_constant(char *arg, long *out)
@@ -72,7 +72,7 @@ int parse_constant(char *arg, long *out)
     return 1;
 }
 
-/**
+/*
  * There are more efficient and easier methods to write remote process memory.
  * However, PTRACE_POKEDATA is the most portable, so we use it.
  */
@@ -132,7 +132,7 @@ int main(int argc, char *argv[])
         return 3;
     }
 
-    /**
+    /*
      * Parse arguments and count the total length of input strings.
      */
     len = 0;
@@ -148,7 +148,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    /**
+    /*
      * Allocate a block of memory for string arguments.
      */
     addr = 0;
@@ -156,17 +156,18 @@ int main(int argc, char *argv[])
         int status;
         long pagesz, sc;
         unsigned long j;
-        if ((sc = find_syscall("mmap")) == -1) {
-            if ((sc = find_syscall("mmap2")) == -1) {
+        if ((sc = find_syscall("mmap2")) == -1) {
+            if ((sc = find_syscall("mmap")) == -1) {
                 fprintf(stderr, "__NR_mmap missing\n");
                 return 4;
             }
         }
         pagesz = sysconf(_SC_PAGE_SIZE);
         ret = psyscall(pid, sc, NULL, (len = pagesz * (1 + (len-1)/pagesz)),
-                PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+                       PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
         if (ret == -1) {
-            fprintf(stderr, "allocating memory from target failed\n");
+            fprintf(stderr, "broken psyscall (or mmap failed) errno=%d (%s)\n",
+                    errno, strerror(errno));
             return 5;
         }
         addr = (unsigned long)ret;
@@ -201,13 +202,13 @@ int main(int argc, char *argv[])
         ptrace(PTRACE_DETACH, pid, NULL, 0);
     }
 
-    /**
+    /*
      * Finally, inject the syscall.
      */
     errno = 0;
     ret = psyscall(pid, number, arg[0], arg[1], arg[2], arg[3], arg[4], arg[5]);
     if (len) psyscall(pid, SYS_munmap, addr, len);
-    if (ret == -1 && errno) {
+    if (ret == -1) {
         fprintf(stderr, "[%d] psyscall() errno=%d (%s)\n",
                 pid, errno, strerror(errno));
         return 9;
