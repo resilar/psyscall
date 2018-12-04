@@ -21,27 +21,32 @@ static void *pdlsym(pid_t pid, void *base, const char *symbol);
 #define PT_REGS (sizeof(((struct user *)0)->regs)/sizeof(unsigned long))
 static struct {
     enum reg_type {
-        ARCH_GP = 0,
-        ARCH_PC,
-        ARCH_SP,
-        ARCH_RET
+        ARCH_GP  = 0x00,
+        ARCH_PC  = 0x01,
+        ARCH_SP  = 0x02,
+        ARCH_RET = 0x04,
+        ARCH_ARG = 0x08
     } regs[PT_REGS];
     int pc, sp, ret;
 } arch;
 
-static void *stub1(volatile long *pid) {
-    syscall(SYS_kill, *pid, SIGSTOP);
-    syscall(SYS_getpid);
-    syscall(SYS_getppid, 0, 1, 2, 3, 4, 5);
-    return (void *)*pid;
+static void *stub1(long number, ...) {
+    syscall(SYS_kill, getpid(), SIGSTOP);
+    syscall(SYS_getpid, number);
+    return (void *)syscall(SYS_getppid, 0, 1, 2, 3, 4, 5);
 }
 
 static int stub0(void *x)
 {
     volatile long pid = (long)getpid();
     ptrace(PTRACE_TRACEME);
-    while (syscall(SYS_kill, pid, SIGSTOP) != 1337) {
-        if (!x) x = ((void *(*)(volatile long *))((~(unsigned long)stub1 & ~0x3) | 2)) (&pid);
+    while (syscall(SYS_kill, pid, SIGSTOP, &pid) != 1337) {
+        if (!x) {
+            x = ((void *(*)(long, ...))((~(unsigned long)stub1 & ~0x3) | 2))
+                (~(unsigned long)stub0, ~(unsigned long)stub0,
+                 ~(unsigned long)stub0, ~(unsigned long)stub0,
+                 ~(unsigned long)stub0, ~(unsigned long)stub0);
+        }
     }
     return pid && !x;
 }
@@ -94,10 +99,18 @@ static int init_arch()
             waitpid(child, &status, 0);
             regs[i] = regsi;
             if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP) {
-                arch.regs[arch.pc = i] = ARCH_PC;
+                arch.regs[arch.pc = i] |= ARCH_PC;
                 break;
             }
         }
+    }
+
+    /*
+     * ARG registers.
+     */
+    for (i = 0; i < PT_REGS; i++) {
+        if (regs[i] == ~(unsigned long)stub0)
+            arch.regs[i] |= ARCH_ARG;
     }
 
     /*
@@ -126,7 +139,7 @@ static int init_arch()
      */
     for (i = 0; i < PT_REGS; i++) {
         if (regs1[i] == child && regs[i] == parent)
-            arch.regs[i] = ARCH_RET;
+            arch.regs[i] |= ARCH_RET;
     }
 
     /*
@@ -141,7 +154,7 @@ static int init_arch()
                 if (regs0[i] == regs[i] && regs1[i] <= regs0[i]) {
                     if (arch.sp < 0 || regs1[i] < regs1[arch.sp])
                         arch.sp = i;
-                    arch.regs[i] = ARCH_SP;
+                    arch.regs[i] |= ARCH_SP;
                 }
             }
         }
@@ -151,7 +164,7 @@ static int init_arch()
      * RET registers.
      */
     for (i = 0; i < PT_REGS; i++) {
-        if (arch.regs[i] == ARCH_RET) {
+        if (arch.regs[i] & ARCH_RET) {
             unsigned long regsi = regs[i];
             regs[i] = 1337;
             ptrace(PTRACE_SETREGS, child, NULL, regs);
@@ -171,11 +184,12 @@ static int init_arch()
     for (i = 0; i < PT_REGS; i++) {
         printf("regs[%02d] = 0x%016lX", i, regs[i]);
         if (arch.pc == i) printf(" *PC*");
-        else if (arch.regs[i] == ARCH_PC) printf(" PC");
+        else if (arch.regs[i] & ARCH_PC) printf(" PC");
         if (arch.sp == i) printf(" *SP*");
-        else if (arch.regs[i] == ARCH_SP) printf(" SP");
+        else if (arch.regs[i] & ARCH_SP) printf(" SP");
         if (arch.ret == i) printf(" *RET*");
-        else if (arch.regs[i] == ARCH_RET) printf(" RET");
+        else if (arch.regs[i] & ARCH_RET) printf(" RET");
+        if (arch.regs[i] & ARCH_ARG) printf(" ARG");
         printf("\n");
     }
 #endif
@@ -333,20 +347,22 @@ long psyscall(pid_t pid, long number, ...)
     ptrace(PTRACE_GETREGS, pid, NULL, &saved);
     regs[arch.pc] = syscall_va;
     for (i = 0; i < PT_REGS; i++) {
-        int j;
-        if (arch.regs[i] != ARCH_SP)
-            continue;
-        if (!proc_maps_find(child, (void *)regs[i], NULL, &map))
-            continue;
-        if (map.perms[0] != 'r' || map.perms[1] != 'w')
-            continue;
+        if (!arch.regs[i]) {
+            regs[i] = saved[i];
+        } else if (arch.regs[i] & ARCH_SP) {
+            int j;
+            if (!proc_maps_find(child, (void *)regs[i], NULL, &map))
+                continue;
+            if (map.perms[0] != 'r' || map.perms[1] != 'w')
+                continue;
 
-        for (j = 0; j < 0x10; j++) {
-            long x = ptrace(PTRACE_PEEKDATA, child, (long *)regs[i]+j, NULL);
-            ptrace(PTRACE_POKEDATA, pid, (long *)stack_va+j, x);
+            for (j = 0; j < 0x10; j++) {
+                ptrace(PTRACE_POKEDATA, pid, (long *)stack_va+j,
+                       ptrace(PTRACE_PEEKDATA, child, (long *)regs[i]+j, NULL));
+            }
+            regs[i] = (long)stack_va;
+            stack_va = (long *)stack_va+j;
         }
-        regs[i] = (long)stack_va;
-        stack_va = (long *)stack_va+j;
     }
     kill(child, SIGKILL);
 
