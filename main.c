@@ -45,31 +45,47 @@ static long find_syscall(char *name)
 /*
  * Parses C-style constant (e.g., '42', 'PROT_READ|PROT_WRITE', ...)
  */
-int parse_constant(char *arg, long *out)
+long parse_constant(char *arg, int *err)
 {
     char *end;
+    long value;
 
-    if (*arg == '\0' || *arg == '|')
+    if (*arg == '\0' || *arg == '|' || *arg == '+') {
+        *err |= !!*arg;
         return 0;
+    }
 
-    if ((end = strchr(arg, '|'))) {
+    if ((end = arg + strcspn(arg, "+|")) && *end) {
+        char op = *end;
         *end = '\0';
-        arg = parse_constant(arg, out) + end;
-        *end = '|';
-        return parse_constant(arg, out);
+        value = parse_constant(arg, err);
+        *end++ = op;
+        switch (op) {
+        case '+': value += parse_constant(end, err); break;
+        case '|': value |= parse_constant(end, err); break;
+        default: *err |= 1; break;
+        }
+        return value;
     }
 
-    *out |= strtol(arg, &end, 0);
+    value = strtol(arg, &end, 0);
     if (*end) {
-        struct entry *hit, key = { arg, 0 };
-        hit = bsearch(&key, constants,
-                sizeof(constants)/sizeof(struct entry),
-                sizeof(struct entry), entry_cmp);
-        if (!hit) return 0;
-        *out |= hit->number;
+        if (end == arg) {
+            struct entry *hit, key = { arg, 0 };
+            hit = bsearch(&key, constants,
+                    sizeof(constants)/sizeof(struct entry),
+                    sizeof(struct entry), entry_cmp);
+            if (hit) {
+                value = hit->number;
+            } else {
+                *err |= 1;
+            }
+        } else {
+            *err |= 1;
+        }
     }
 
-    return 1;
+    return value;
 }
 
 /*
@@ -138,11 +154,13 @@ int main(int argc, char *argv[])
     len = 0;
     for (i = 3; i < argc; i++) {
         const char *p;
+        int err = 0;
         if (argv[i][0] == '"' && (p = strchr(argv[i]+1, '"')) && !p[1]) {
             len += p-argv[i];
             continue;
         }
-        if (!parse_constant(argv[i], &arg[i-3])) {
+        arg[i-3] = parse_constant(argv[i], &err);
+        if (err) {
             fprintf(stderr, "bad arg%d: %s\n", i-3, argv[i]);
             return 10+i;
         }
