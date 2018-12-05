@@ -183,7 +183,7 @@ int main(int argc, char *argv[])
         pagesz = sysconf(_SC_PAGE_SIZE);
         ret = psyscall(pid, sc, NULL, (len = pagesz * (1 + (len-1)/pagesz)),
                        PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-        if (ret == -1) {
+        if (ret == (long)MAP_FAILED) {
             fprintf(stderr, "broken psyscall (or mmap failed) errno=%d (%s)\n",
                     errno, strerror(errno));
             return 5;
