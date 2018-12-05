@@ -1,12 +1,10 @@
-CC ?= cc
-
-CFLAGS += -g -Wall -std=c99 -pedantic
-LDFLAGS +=
+CFLAGS ?= -g
+CFLAGS += -Wall -std=c99 -pedantic
 
 all: psyscall
 
 psyscall: main.o psyscall.o
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
