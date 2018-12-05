@@ -92,22 +92,21 @@ long parse_constant(char *arg, int *err)
  * There are more efficient and easier methods to write remote process memory.
  * However, PTRACE_POKEDATA is the most portable, so we use it.
  */
-static long ptrace_write(pid_t pid, void *addr, void *buf, long len)
+static size_t ptrace_write(pid_t pid, void *addr, void *buf, size_t len)
 {
-    long n = len;
+    size_t n = len;
     errno = 0;
     while (len > 0) {
-        int i, j;
-        if ((i = ((unsigned long)addr % sizeof(long))) || len < sizeof(long)) {
+        size_t i, j;
+        if ((i = ((size_t)addr % sizeof(long))) || len < sizeof(long)) {
             union {
                 long value;
-                unsigned char buf[sizeof(long)];
+                char buf[sizeof(long)];
             } data;
             data.value = ptrace(PTRACE_PEEKDATA, pid, (char *)addr-i, 0);
             if (errno) break;
-            for (j = i; j < sizeof(long) && j-i < len; j++) {
+            for (j = i; j < sizeof(long) && j-i < len; j++)
                 data.buf[j] = ((char *)buf)[j-i];
-            }
             if (!ptrace(PTRACE_POKEDATA, pid, (char *)addr-i, data.value)) {
                 addr = (char *)addr + (j-i);
                 buf = (char *)buf + (j-i);
@@ -131,7 +130,7 @@ int main(int argc, char *argv[])
     int i;
     pid_t pid;
     unsigned long addr, len;
-    long ret, number, arg[6] = {0};
+    long ret, number, arg[6] = {0, 0, 0, 0, 0, 0};
 
     errno = 0;
     if (argc < 3 || argc > 9) {
@@ -180,26 +179,30 @@ int main(int argc, char *argv[])
                 return 4;
             }
         }
-        pagesz = sysconf(_SC_PAGE_SIZE);
+        if ((pagesz = sysconf(_SC_PAGE_SIZE)) == -1) {
+            fprintf(stderr, "error determining page size errno=%d (%s)\n",
+                    errno, strerror(errno));
+            return 5;
+        }
         ret = psyscall(pid, sc, NULL, (len = pagesz * (1 + (len-1)/pagesz)),
                        PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
         if (ret == (long)MAP_FAILED) {
             fprintf(stderr, "broken psyscall (or mmap failed) errno=%d (%s)\n",
                     errno, strerror(errno));
-            return 5;
+            return 6;
         }
         addr = (unsigned long)ret;
 
         if (ptrace(PTRACE_ATTACH, pid, NULL, 0) == -1) {
             fprintf(stderr, "ptrace() attach failed: %s\n", strerror(errno));
             psyscall(pid, SYS_munmap, addr, len);
-            return 6;
+            return 7;
         }
         if (waitpid(pid, &status, 0) == -1 || !WIFSTOPPED(status)) {
             fprintf(stderr, "stopping target process failed\n");
             ptrace(PTRACE_DETACH, pid, NULL, 0);
             psyscall(pid, SYS_munmap, addr, len);
-            return 7;
+            return 8;
         }
 
         for (i = 3, j = 0; i < argc; i++) {
@@ -215,7 +218,7 @@ int main(int argc, char *argv[])
                     fprintf(stderr, "ptrace_write() failed\n");
                     ptrace(PTRACE_DETACH, pid, NULL, 0);
                     psyscall(pid, SYS_munmap, addr, len);
-                    return 8;
+                    return 9;
                 }
             }
         }
@@ -231,7 +234,7 @@ int main(int argc, char *argv[])
     if (ret == -1) {
         fprintf(stderr, "[%d] psyscall() errno=%d (%s)\n",
                 pid, errno, strerror(errno));
-        return 9;
+        return 10;
     }
 
     if (isatty(STDOUT_FILENO)) {

@@ -43,9 +43,8 @@ static int stub0(void *x)
     while (syscall(SYS_kill, pid, SIGSTOP, &pid) != 1337) {
         if (!x) {
             x = ((void *(*)(long, ...))((~(unsigned long)stub1 & ~0x3) | 2))
-                (~(unsigned long)stub0, ~(unsigned long)stub0,
-                 ~(unsigned long)stub0, ~(unsigned long)stub0,
-                 ~(unsigned long)stub0, ~(unsigned long)stub0);
+                (~(long)stub0, ~(long)stub0, ~(long)stub0,
+                 ~(long)stub0, ~(long)stub0, ~(long)stub0);
         }
     }
     return pid && !x;
@@ -242,7 +241,7 @@ static FILE *proc_maps_iter(FILE *it, struct proc_map *map)
 }
 
 static int proc_maps_find(pid_t pid, void *addr, char *path,
-        struct proc_map *out)
+                          struct proc_map *out)
 {
     FILE *it = proc_maps_open(pid);
     while ((it = proc_maps_iter(it, out))) {
@@ -281,7 +280,7 @@ long psyscall(pid_t pid, long number, ...)
     }
     waitpid(pid, &status, 0);
     if (!WIFSTOPPED(status)) {
-        fprintf(stderr, "failed to stop the target pid=%d\n", pid);
+        fprintf(stderr, "failed to stop target pid=%d\n", (int)pid);
         errno = ECHILD;
         return -1;
     }
@@ -302,6 +301,7 @@ long psyscall(pid_t pid, long number, ...)
         }
     }
     if (it == NULL || !proc_maps_find(pid, 0, "[stack]", &map)) {
+        fprintf(stderr, "stack of pid=%d missing\n", (int)pid);
         ptrace(PTRACE_DETACH, pid, NULL, NULL);
         errno = EINVAL;
         return -1;
@@ -309,7 +309,7 @@ long psyscall(pid_t pid, long number, ...)
     stack_va = (char *)map.start + 0x80;
 
     /*
-     * Capture (local) syscall context from a forked child process.
+     * Capture (local) syscall context from a fork.
      */
     va_start(ap, number);
     for (i = 0; i < 6; argv[i++] = va_arg(ap, long))
@@ -367,7 +367,7 @@ long psyscall(pid_t pid, long number, ...)
     kill(child, SIGKILL);
 
     /*
-     * Execute syscall.
+     * Execute syscall() in the target process.
      */
     ptrace(PTRACE_SETREGS, pid, NULL, &regs);
     ptrace(PTRACE_SYSCALL, pid, NULL, NULL);
@@ -376,20 +376,26 @@ long psyscall(pid_t pid, long number, ...)
         ptrace(PTRACE_SYSCALL, pid, NULL, NULL);
         waitpid(pid, &status, 0);
     }
-    if (WIFSTOPPED(status)) {
-        ptrace(PTRACE_GETREGS, pid, NULL, &regs);
-        ret = regs[arch.ret];
-    } else if (WIFEXITED(status)) {
+    if (WIFEXITED(status)) {
+        fprintf(stderr, "target pid=%d exited unexpectedly", (int)pid);
         errno = ESRCH;
         return WEXITSTATUS(status);
+    }
+
+    /*
+     * Get result and detach from the target.
+     */
+    ptrace(PTRACE_GETREGS, pid, NULL, &regs);
+    ptrace(PTRACE_SETREGS, pid, NULL, &saved);
+    ptrace(PTRACE_DETACH, pid, NULL, NULL);
+    if (WIFSTOPPED(status)) {
+        ret = regs[arch.ret];
     } else {
-        fprintf(stderr, "failed to invoke syscall()\n");
+        fprintf(stderr, "failed to execute injected syscall\n");
         errno = ECHILD;
         ret = -1;
     }
 
-    ptrace(PTRACE_SETREGS, pid, NULL, &saved);
-    ptrace(PTRACE_DETACH, pid, NULL, NULL);
     return ret;
 }
 
@@ -404,7 +410,7 @@ struct elf {
     uint16_t type;
     int W;
 
-    long (*getN)(pid_t pid, const void *addr, void *buf, long len);
+    int (*read)(pid_t pid, const void *addr, void *buf, size_t len);
 
     struct {
         uintptr_t offset;
@@ -415,7 +421,7 @@ struct elf {
     uintptr_t strtab, strsz;
 };
 
-static long readN(pid_t pid, const void *addr, void *buf, long len)
+static int readN(pid_t pid, const void *addr, void *buf, size_t len)
 {
     errno = 0;
     if (!pid) {
@@ -423,17 +429,16 @@ static long readN(pid_t pid, const void *addr, void *buf, long len)
         return 1;
     }
     while (len > 0) {
-        int i, j;
-        if ((i = ((unsigned long)addr % sizeof(long))) || len < sizeof(long)) {
+        size_t i, j;
+        if ((i = ((size_t)addr % sizeof(long))) || len < sizeof(long)) {
             union {
                 long value;
-                unsigned char buf[sizeof(long)];
+                char buf[sizeof(long)];
             } data;
             data.value = ptrace(PTRACE_PEEKDATA, pid, (char *)addr - i, NULL);
             if (errno) return 0;
-            for (j = i; j < sizeof(long) && j-i < len; j++) {
+            for (j = i; j < sizeof(long) && j-i < len; j++)
                 ((char *)buf)[j-i] = data.buf[j];
-            }
             addr = (char *)addr + (j-i);
             buf = (char *)buf + (j-i);
             len -= j-i;
@@ -450,18 +455,14 @@ static long readN(pid_t pid, const void *addr, void *buf, long len)
     return 1;
 }
 
-static long Ndaer(pid_t pid, const void *addr, void *buf, long len)
+static int Ndaer(pid_t pid, const void *addr, void *buf, size_t len)
 {
-    if (readN(pid, addr, buf, len)) {
-        int i, j;
-        for (i = 0, j = len-1; i < j; i++, j--) {
-            char tmp = ((char *)buf)[i];
-            ((char *)buf)[i] = ((char *)buf)[j];
-            ((char *)buf)[j] = tmp;
-        }
-        return 1;
+    int ok = readN(pid, addr, buf, len);
+    if (ok) {
+        char *p, *q;
+        for (p = buf, q = p + len-1; p < q; *p ^= *q, *q ^= *p, *p++ ^= *q--);
     }
-    return 0;
+    return ok;
 }
 
 static uint8_t get8(pid_t pid, const void *addr)
@@ -472,17 +473,17 @@ static uint8_t get8(pid_t pid, const void *addr)
 static uint16_t get16(struct elf *elf, const void *addr)
 {
     uint16_t ret;
-    return elf->getN(elf->pid, addr, &ret, sizeof(uint16_t)) ? ret : 0;
+    return elf->read(elf->pid, addr, &ret, sizeof(uint16_t)) ? ret : 0;
 }
 static uint32_t get32(struct elf *elf, const void *addr)
 {
     uint32_t ret;
-    return elf->getN(elf->pid, addr, &ret, sizeof(uint32_t)) ? ret : 0;
+    return elf->read(elf->pid, addr, &ret, sizeof(uint32_t)) ? ret : 0;
 }
 static uint64_t get64(struct elf *elf, const void *addr)
 {
     uint64_t ret;
-    return elf->getN(elf->pid, addr, &ret, sizeof(uint64_t)) ? ret : 0;
+    return elf->read(elf->pid, addr, &ret, sizeof(uint64_t)) ? ret : 0;
 }
 
 static uintptr_t getW(struct elf *elf, const void *addr)
@@ -507,7 +508,7 @@ static int loadelf(pid_t pid, const char *base, struct elf *elf)
             && get8(pid, base+6) == 1) {
         union { uint16_t value; char buf[2]; } data;
         data.value = (uint16_t)0x1122;
-        elf->getN = (data.buf[0] & elf->data) ? Ndaer : readN;
+        elf->read = (data.buf[0] & elf->data) ? Ndaer : readN;
         elf->type = get16(elf, base + 0x10);
         elf->W = (2 << elf->class);
     } else {
@@ -591,23 +592,30 @@ static int sym_iter(struct elf *elf, int i, uint32_t *stridx, uintptr_t *value)
 static void *pdlsym(pid_t pid, void *base, const char *symbol)
 {
     struct elf elf;
+    uintptr_t value = 0;
     if (loadelf((pid == getpid()) ? 0 : pid, base, &elf)) {
-        int i, j;
+        int i;
         uint32_t stridx;
-        uintptr_t value;
+        size_t len = strlen(symbol);
         const char *pstrtab = (char *)elf.strtab;
         if (elf.strtab < elf.base)
             pstrtab += elf.base;
-        for (i = 0; sym_iter(&elf, i, &stridx, &value); i++) {
-            if (value) {
-                for (j = 0; stridx+j < elf.strsz; j++) {
-                    if (symbol[j] != (char)get8(pid, pstrtab + stridx+j))
+        for (i = 0; sym_iter(&elf, i, &stridx, &value); value = 0, i++) {
+            if (value && stridx+len <= elf.strsz) {
+                size_t j = 0;
+                while (j < len) {
+                    long buf;
+                    int n = ((uintptr_t)pstrtab + stridx+j) % sizeof(buf);
+                    n = (len-j < sizeof(buf)) ? len-j : sizeof(buf) - n;
+                    elf.read(elf.pid, pstrtab + stridx+j, &buf, n);
+                    if (memcmp(&symbol[j], &buf, n))
                         break;
-                    if (!symbol[j])
-                        return (void *)value;
+                    j += n;
                 }
+                if (j == len)
+                    break;
             }
         }
     }
-    return NULL;
+    return (void *)value;
 }
