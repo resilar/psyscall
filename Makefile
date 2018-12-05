@@ -1,5 +1,5 @@
 CFLAGS ?= -g
-CFLAGS += -Wall -std=c99 -pedantic
+CFLAGS += -Wall -std=c89 -pedantic
 
 all: psyscall
 
