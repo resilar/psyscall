@@ -33,7 +33,7 @@ static long find_syscall(char *name)
     char *end;
     long nr = strtol(name, &end, 0);
     if (*end != '\0') {
-        struct entry *hit, key;
+        struct entry key, *hit;
         key.name = name;
         key.number = 0;
         hit = bsearch(&key, syscalls, sizeof(syscalls)/sizeof(struct entry),
@@ -72,12 +72,12 @@ long parse_constant(char *arg, int *err)
     value = strtol(arg, &end, 0);
     if (*end) {
         if (end == arg) {
-            struct entry *hit, key;
+            struct entry key, *hit;
             key.name = arg;
             key.number = 0;
             hit = bsearch(&key, constants,
-                    sizeof(constants)/sizeof(struct entry),
-                    sizeof(struct entry), entry_cmp);
+                          sizeof(constants)/sizeof(struct entry),
+                          sizeof(struct entry), entry_cmp);
             if (hit) {
                 value = hit->number;
             } else {
