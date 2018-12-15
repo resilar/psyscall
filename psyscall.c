@@ -607,7 +607,7 @@ static void *pdlsym(pid_t pid, void *base, const char *symbol)
                     char buf[sizeof(long)];
                     int n = ((uintptr_t)pstrtab + stridx+j) % sizeof(buf);
                     n = (size-j < sizeof(buf)) ? size-j : sizeof(buf) - n;
-                    if (!elf.getN(elf.pid, pstrtab + stridx+j, &buf, n))
+                    if (!readN(elf.pid, pstrtab + stridx+j, &buf, n))
                         break;
                     if (memcmp(&symbol[j], &buf, n))
                         break;
