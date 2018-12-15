@@ -410,7 +410,7 @@ struct elf {
     uint16_t type;
     int W;
 
-    int (*read)(pid_t pid, const void *addr, void *buf, size_t len);
+    int (*getN)(pid_t pid, const void *addr, void *buf, size_t len);
 
     struct {
         uintptr_t offset;
@@ -473,17 +473,17 @@ static uint8_t get8(pid_t pid, const void *addr)
 static uint16_t get16(struct elf *elf, const void *addr)
 {
     uint16_t ret;
-    return elf->read(elf->pid, addr, &ret, sizeof(uint16_t)) ? ret : 0;
+    return elf->getN(elf->pid, addr, &ret, sizeof(uint16_t)) ? ret : 0;
 }
 static uint32_t get32(struct elf *elf, const void *addr)
 {
     uint32_t ret;
-    return elf->read(elf->pid, addr, &ret, sizeof(uint32_t)) ? ret : 0;
+    return elf->getN(elf->pid, addr, &ret, sizeof(uint32_t)) ? ret : 0;
 }
 static uint64_t get64(struct elf *elf, const void *addr)
 {
     uint64_t ret;
-    return elf->read(elf->pid, addr, &ret, sizeof(uint64_t)) ? ret : 0;
+    return elf->getN(elf->pid, addr, &ret, sizeof(uint64_t)) ? ret : 0;
 }
 
 static uintptr_t getW(struct elf *elf, const void *addr)
@@ -508,7 +508,7 @@ static int loadelf(pid_t pid, const char *base, struct elf *elf)
             && get8(pid, base+6) == 1) {
         union { uint16_t value; char buf[2]; } data;
         data.value = (uint16_t)0x1122;
-        elf->read = (data.buf[0] & elf->data) ? Ndaer : readN;
+        elf->getN = (data.buf[0] & elf->data) ? Ndaer : readN;
         elf->type = get16(elf, base + 0x10);
         elf->W = (2 << elf->class);
     } else {
@@ -604,10 +604,11 @@ static void *pdlsym(pid_t pid, void *base, const char *symbol)
             if (value && stridx+len <= elf.strsz) {
                 size_t j = 0;
                 while (j < len) {
-                    long buf;
+                    char buf[sizeof(long)];
                     int n = ((uintptr_t)pstrtab + stridx+j) % sizeof(buf);
                     n = (len-j < sizeof(buf)) ? len-j : sizeof(buf) - n;
-                    elf.read(elf.pid, pstrtab + stridx+j, &buf, n);
+                    if (!elf.getN(elf.pid, pstrtab + stridx+j, &buf, n))
+                        break;
                     if (memcmp(&symbol[j], &buf, n))
                         break;
                     j += n;
