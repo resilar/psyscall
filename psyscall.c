@@ -596,24 +596,24 @@ static void *pdlsym(pid_t pid, void *base, const char *symbol)
     if (loadelf((pid == getpid()) ? 0 : pid, base, &elf)) {
         int i;
         uint32_t stridx;
-        size_t len = strlen(symbol);
+        size_t size = strlen(symbol) + 1;
         const char *pstrtab = (char *)elf.strtab;
         if (elf.strtab < elf.base)
             pstrtab += elf.base;
         for (i = 0; sym_iter(&elf, i, &stridx, &value); value = 0, i++) {
-            if (value && stridx+len <= elf.strsz) {
+            if (value && stridx+size <= elf.strsz) {
                 size_t j = 0;
-                while (j < len) {
+                while (j < size) {
                     char buf[sizeof(long)];
                     int n = ((uintptr_t)pstrtab + stridx+j) % sizeof(buf);
-                    n = (len-j < sizeof(buf)) ? len-j : sizeof(buf) - n;
+                    n = (size-j < sizeof(buf)) ? size-j : sizeof(buf) - n;
                     if (!elf.getN(elf.pid, pstrtab + stridx+j, &buf, n))
                         break;
                     if (memcmp(&symbol[j], &buf, n))
                         break;
                     j += n;
                 }
-                if (j == len)
+                if (j == size)
                     break;
             }
         }
