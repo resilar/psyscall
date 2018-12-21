@@ -492,10 +492,11 @@ static uintptr_t getW(struct elf *elf, const void *addr)
                                 : (uintptr_t)get64(elf, addr);
 }
 
-static int loadelf(pid_t pid, const char *base, struct elf *elf)
+static int loadelf(pid_t pid, const void *addr, struct elf *elf)
 {
     uint32_t magic;
     int i, j, loads;
+    const char *base = addr;
 
     /*
      * ELF header.
