@@ -423,12 +423,14 @@ struct elf {
 
 static int readN(pid_t pid, const void *addr, void *buf, size_t len)
 {
-    errno = 0;
+    int errnold = errno;
     if (!pid) {
         memmove(buf, addr, len);
         return 1;
     }
-    while (len > 0) {
+
+    errno = 0;
+    while (!errno && len > 0) {
         size_t i, j;
         if ((i = ((size_t)addr % sizeof(long))) || len < sizeof(long)) {
             union {
@@ -436,23 +438,26 @@ static int readN(pid_t pid, const void *addr, void *buf, size_t len)
                 char buf[sizeof(long)];
             } data;
             data.value = ptrace(PTRACE_PEEKDATA, pid, (char *)addr - i, NULL);
-            if (errno) return 0;
-            for (j = i; j < sizeof(long) && j-i < len; j++)
-                ((char *)buf)[j-i] = data.buf[j];
-            addr = (char *)addr + (j-i);
-            buf = (char *)buf + (j-i);
-            len -= j-i;
+            if (!errno) {
+                for (j = i; j < sizeof(long) && j-i < len; j++)
+                    ((char *)buf)[j-i] = data.buf[j];
+                addr = (char *)addr + (j-i);
+                buf = (char *)buf + (j-i);
+                len -= j-i;
+            }
         } else {
             for (i = 0, j = len/sizeof(long); i < j; i++) {
                 *(long *)buf = ptrace(PTRACE_PEEKDATA, pid, addr, NULL);
-                if (errno) return 0;
+                if (errno) break;
                 addr = (char *)addr + sizeof(long);
                 buf = (char *)buf + sizeof(long);
                 len -= sizeof(long);
             }
         }
     }
-    return 1;
+    if (!errno)
+        errno = errnold;
+    return !len;
 }
 
 static int Ndaer(pid_t pid, const void *addr, void *buf, size_t len)

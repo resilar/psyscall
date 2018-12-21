@@ -98,8 +98,9 @@ long parse_constant(char *arg, int *err)
 static size_t ptrace_write(pid_t pid, void *addr, void *buf, size_t len)
 {
     size_t n = len;
+    int errnold = errno;
     errno = 0;
-    while (len > 0) {
+    while (!errno && len > 0) {
         size_t i, j;
         if ((i = ((size_t)addr % sizeof(long))) || len < sizeof(long)) {
             union {
@@ -107,24 +108,27 @@ static size_t ptrace_write(pid_t pid, void *addr, void *buf, size_t len)
                 char buf[sizeof(long)];
             } data;
             data.value = ptrace(PTRACE_PEEKDATA, pid, (char *)addr-i, 0);
-            if (errno) break;
-            for (j = i; j < sizeof(long) && j-i < len; j++)
-                data.buf[j] = ((char *)buf)[j-i];
-            if (!ptrace(PTRACE_POKEDATA, pid, (char *)addr-i, data.value)) {
-                addr = (char *)addr + (j-i);
-                buf = (char *)buf + (j-i);
-                len -= j-i;
+            if (!errno) {
+                for (j = i; j < sizeof(long) && j-i < len; j++)
+                    data.buf[j] = ((char *)buf)[j-i];
+                if (!ptrace(PTRACE_POKEDATA, pid, (char *)addr-i, data.value)) {
+                    addr = (char *)addr + (j-i);
+                    buf = (char *)buf + (j-i);
+                    len -= j-i;
+                }
             }
         } else {
             for (i = 0, j = len/sizeof(long); i < j; i++) {
-                if (ptrace(PTRACE_POKEDATA, pid, addr, *(long *)buf) != 0)
-                    return n - len;
+                if (ptrace(PTRACE_POKEDATA, pid, addr, *(long *)buf) == -1)
+                    break;
                 addr = (char *)addr + sizeof(long);
                 buf = (char *)buf + sizeof(long);
                 len -= sizeof(long);
             }
         }
     }
+    if (!errno)
+        errno = errnold;
     return n - len;
 }
 
