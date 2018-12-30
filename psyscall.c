@@ -74,7 +74,7 @@ static int init_arch()
     }
     parent = getpid();
     waitpid(child, &status, 0);
-    if (!(WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP)) {
+    if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGSTOP) {
         fprintf(stderr, "failed to stop a clone\n");
         goto die;
     }
