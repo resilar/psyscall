@@ -602,10 +602,11 @@ static void *pdlsym(pid_t pid, void *base, const char *symbol)
     if (loadelf((pid == getpid()) ? 0 : pid, base, &elf)) {
         int i;
         uint32_t stridx;
+        const char *pstrtab;
         size_t size = strlen(symbol) + 1;
-        const char *pstrtab = (char *)elf.strtab;
-        if (elf.strtab < elf.base)
-            pstrtab += elf.base;
+        if (size == 0)
+            return NULL;
+        pstrtab = (char *)elf.strtab + (elf.strtab < elf.base ? elf.base : 0);
         for (i = 0; sym_iter(&elf, i, &stridx, &value); value = 0, i++) {
             if (value && stridx+size <= elf.strsz) {
                 size_t j = 0;
