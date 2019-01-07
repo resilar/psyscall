@@ -536,6 +536,8 @@ static int loadelf(pid_t pid, const void *addr, struct elf *elf)
         const char *ph = base + elf->phdr.offset + i*elf->phdr.size;
 
         phtype = get32(elf, ph);
+        if (phtype == 0 /* PT_NULL */)
+            break;
         if (phtype != 1 /* PT_LOAD */ && phtype != 2 /* PT_DYNAMIC */)
             continue;
 
@@ -577,13 +579,26 @@ static int loadelf(pid_t pid, const void *addr, struct elf *elf)
         }
     }
 
-    return loads && elf->strtab && elf->strsz && elf->symtab && elf->syment;
+    /* Check that we have all program headers required for dynamic linking */
+    if (!loads || !elf->strtab || !elf->strsz || !elf->symtab || !elf->syment)
+        return 0;
+
+    /* String table (immediately) follows the symbol table */
+    if (!(elf->symtab < elf->strtab))
+        return 0;
+
+    /* Symbol entry size is a non-zero integer that divides symtab size */
+    if ((elf->strtab - elf->symtab) % elf->syment)
+        return 0;
+
+    /* All OK! */
+    return 1;
 }
 
 static int sym_iter(struct elf *elf, int i, uint32_t *stridx, uintptr_t *value)
 {
-    if ((i+1)*elf->syment-1 < elf->strtab - elf->symtab) {
-        const char *sym = (char *)elf->symtab + elf->syment*i;
+    if (i*elf->syment < elf->strtab - elf->symtab) {
+        const char *sym = (char *)elf->symtab + i*elf->syment;
         if (elf->symtab < elf->base)
             sym += elf->base;
         if ((*stridx = get32(elf, sym)) < elf->strsz) {
