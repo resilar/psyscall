@@ -301,7 +301,10 @@ long psyscall(pid_t pid, long number, ...)
         }
     }
     if (it == NULL || !proc_maps_find(pid, 0, "[stack]", &map)) {
-        fprintf(stderr, "stack of pid=%d missing\n", (int)pid);
+        const char *fmt = it ? "stack of pid=%d missing\n"
+                             : "libc of pid=%d not found\n"
+                               "perhaps the target is statically linked?\n";
+        fprintf(stderr, fmt, (int)pid);
         ptrace(PTRACE_DETACH, pid, NULL, NULL);
         errno = EINVAL;
         return -1;
