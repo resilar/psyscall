@@ -1,10 +1,12 @@
 # psyscall
 
-Linux syscall() injection to external processes.
+Linux syscall() injection to external processes *in a portable fashion* using `ptrace(2)`.
 
 Tested on x86 (Arch Linux & Ubuntu), ARMv7 (Android 6 & 7), MIPS (Debian), PPC64 (Debian).
 
 Requires `echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope` (or root privileges).
+
+Yes, this is just a proof of concept and silly toy.
 
 ## Examples
 
