@@ -315,7 +315,7 @@ long psyscall(pid_t pid, long number, ...)
      * Capture (local) syscall context from a fork.
      */
     va_start(ap, number);
-    for (i = 0; i < 6; argv[i++] = va_arg(ap, long))
+    for (i = 0; i < 6; argv[i++] = va_arg(ap, long));
     va_end(ap);
     if (!(child = fork())) {
         if (ptrace(PTRACE_TRACEME) != -1 && !kill(getpid(), SIGSTOP)) {
